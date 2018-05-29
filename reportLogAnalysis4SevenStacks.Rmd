@@ -7,7 +7,7 @@ output: html_document
 ---
 
 
-##Background
+## Background
 
 This working draft keeps track of the work going on MTData report log analysis across multiple stacks. The objective of this analysis to identify bottle necks in the database (DB) due to queries made by MTData clients for generating various reports. The report geeneration process can send query to DB either using the web front end UI of MTData termed as Hawk Eye or runing query directly to DB using API. The reporting broker keeps the log of all DB queries by customer which will be used for this analysis 
 
