@@ -1,0 +1,604 @@
+---
+title: "Analysis of report log from 7 stacks of MTData"
+runtime: shiny
+output: html_document
+  # html_notebook: default
+  # pdf_document: default
+---
+
+
+##Background
+
+This working draft keeps track of the work going on MTData report log analysis across multiple stacks. The objective of this analysis to identify bottle necks in the database (DB) due to queries made by MTData clients for generating various reports. The report geeneration process can send query to DB either using the web front end UI of MTData termed as Hawk Eye or runing query directly to DB using API. The reporting broker keeps the log of all DB queries by customer which will be used for this analysis 
+
+```{r loadPackages, echo=FALSE, message=FALSE}
+library(tidyverse)
+library(stringr)
+library(lubridate)
+library(wesanderson)
+library(shiny)
+library(scales)
+```
+
+
+
+## Data
+
+The data for this analysis comes from seven stacks from MTData for almost a month of customer activity on those stacks. Brad Horton of MTData supplied this data and according to his description is it stored in AWS S3. He also added that  such data is kept for only one month (or 30 days?). The raw data dump recived as checked and summarized to see basic information about the supplied data
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+source('C:/Users/roman/Documents/MTData/DB_uplift/dirStructure.R')
+rownames(dirStr[[1]]) <- NULL
+dirStr[[1]]
+```
+
+Above table shows follwing information
+
+* directory: name of a folder received
+* stack: name of the stack
+* MT: logical indicating whether a stack is multi-tenanted or not (i.e., single tenanted)
+* dirFileCount: number of files found in the folder 
+* rbLogFileCount: number of report broker log files in the directory which are useful for this analysis 
+* oldestFileDate: useful file with oldest date reference 
+* newestFileDate: useful file with most recent date reference 
+
+## Extracting information from report broker log files
+
+The log files contains unstrcutred report log for both Hawk eye and API called reports. Irrespective of the method of calling a new report generation process is identified by the string **Starting task** in the log file along with *user ID*, *report ID* and *report name*. 
+
+The completion of Hawk eye called reports DB queries are identified by the string **Starting Excel** in the report log lines which also contain *report ID* and associated *report name*. It is important to note that **Starting Excel** doesn't necessarily mean completion of the report generation work but it difinitely shows the end of query in th DB which is usually followed by putting some formatting in Excel to make the report easliy readable.
+
+The API called reports are assigned an unique *report ID* when the report log starts trakcing the task. The completion of an API called report is identified by the string **GetReportOutput** in the report log line along with *report ID*. 
+
+The common IDs are used to match task start and end line from the reporting log file and associated information about the report and user are stored in a table for processing. 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# source('C:/Users/roman/Documents/MTData/DB_uplift/reportGenerationTimeSummary.R')
+```
+
+```{r, echo=FALSE, message=FALSE}
+repStartEndTimeLog <- read_csv(paste0("output_report_log_summary",
+                                      "/repStartEndTimeLog_2018-04-08_to_2018-05-06.csv"))
+repStartEndTimeLog %>%
+  mutate(repGenTime = difftime(taskEnd, taskStart, units="mins"),
+         date = date(taskStart),
+         weekDay = as.factor(as.character(wday(date, label = TRUE))),
+         hour = factor(hour(taskStart))) %>%
+  filter(repGenTime > 0) %>%
+  ungroup() -> wd
+```
+
+Information extracted from the log file contains information for `r nrow(repStartEndTimeLog)` reports. However, data  shows some anomaly in extraction due to non-unique nature of *report ID* appearing in multiple log linies with the string **GetReportOutput** making some API genrated reports unusable (usually those are simultaneous tasks ran by same user). Those improperly matched reports are removed to create a working data containing infromatin for  `r nrow(wd)` reports which accounts `r round((nrow(wd)/nrow(repStartEndTimeLog))*100,2)` \% of the reports in the raw log files.
+
+
+## Univariate data summary
+
+<!-- Write functions to tabulate and plot report generation time agains different factors -->
+
+
+<!-- ```{r, echo = FALSE} -->
+<!--   # wd %>% -->
+<!--   #   mutate(repGenTime = as.numeric(repGenTime)) %>%  -->
+<!--   #   mutate(groupVar = factor(data %>% pull(as.character(groupVar)))) %>% -->
+<!--   #   group_by(as.character(groupVar)) %>% -->
+<!--   #   summarize(reportCount = n(), -->
+<!--   #             reporGenTimeMedian = median(repGenTime)) %>% -->
+<!--   #   arrange(reportCount) -> out -->
+
+
+<!-- ``` -->
+
+
+
+```{r repCountByFactFunc, echo=FALSE, message=FALSE}
+factorCount <- function(data = wd, groupVar = quote(process)){
+  data %>%
+    mutate(repGenTime = as.numeric(repGenTime)) %>% 
+    mutate(groupVar = factor(data %>% pull(as.character(groupVar)))) %>%
+    group_by(as.character(groupVar)) %>%
+    summarize(reportCount = n(),
+              reporGenTimeMedian = median(repGenTime)) %>%
+    arrange(reportCount) -> out
+  colnames(out)[1] <- c(as.character(groupVar))
+  return(data.frame(out))
+}
+```
+
+```{r repCountPlotByFactFunc, echo=FALSE, message=FALSE}
+factorPlot <- function(data = wd, 
+                       groupVar = "process",
+                       plotType = c("Box"),
+                       showData = c("No")){
+  data %>%
+    mutate(repGenTime = as.numeric(repGenTime)) %>% 
+    mutate(groupVar = factor(data %>% pull(as.character(groupVar)))) %>%
+  ggplot(aes(x = groupVar, y = repGenTime)) -> gp
+  
+  if(plotType == "geom_box"){
+    gp1 <- gp + geom_boxplot(alpha = 0.7,
+                 varwidth = TRUE,
+                 outlier.colour = wes_palette("Royal1")[2],
+                 outlier.shape = 1)
+  }
+  if(plotType == "geom_violin"){
+    if(showData == "geom_jitter"){
+      gp1 <- gp +
+          geom_jitter(height = 0, width = 0.1, col =wes_palette("Royal1")[1]) +
+          geom_violin(scale = "count",
+                trim = TRUE,
+                draw_quantiles = c(0.05, 0.25, 0.5, 0.75, 0.95),
+                alpha = 0.4,
+                col = wes_palette("Royal1")[2],
+                size = 0.5)
+    }
+    if(showData == "No"){
+      gp1 <- gp +
+          geom_violin(scale = "count",
+                trim = TRUE,
+                draw_quantiles = c(0.05, 0.25, 0.5, 0.75, 0.95),
+                alpha = 0.4,
+                col = wes_palette("Royal1")[2],
+                size = 0.5)
+    }
+  }
+    
+  gp1 +
+    theme_bw() + 
+    scale_y_continuous(trans = "log", # Natural log
+                       breaks = scales::trans_breaks("log", function(x) exp(x), n = 10),
+                       labels = prettyNum) +
+                       # labels = trans_format("log", math_format(2.71828^.x))) +
+    # scale_y_continuous(trans = "log10", 
+    #                    breaks = scales::trans_breaks("log10", 
+    #                                                  function(x) 10^x),
+    #                    labels = scales::trans_format("log10", 
+    #                                                  scales::math_format(10^.x))) + 
+    labs(title = "Report generation time") +
+    ylab("Time in minutes") +
+    xlab(paste0(groupVar)) +
+    theme(text = element_text(size=20))
+}
+```
+
+```{r, echo=FALSE, message=FALSE}
+factorCount(groupVar = quote(process)) -> processCount
+processCount
+```
+The API generated reports accounts `r  round((processCount$reportCount[1]/sum(processCount$reportCount))*100,2)`\%  of all reports. The API generated reports are generated `r  round((processCount$reporGenTimeMedian[2]/processCount$reporGenTimeMedian[1]),0)` times faster on average
+
+```{r, echo=FALSE, message=FALSE}
+# factorPlot(groupVar = quote(process)) -> processPlot
+# processPlot
+```
+
+
+## View raw data
+
+```{r, echo = FALSE}
+
+ui <- fluidPage(
+  title = "Examine Raw Data",
+  sidebarLayout(
+    sidebarPanel(
+      conditionalPanel(
+        'input.dataset === "wd"',
+        checkboxGroupInput("show_vars", "Columns in dataset to show:",
+                           names(wd), selected = names(wd)[1:3])
+      )
+    ),
+    mainPanel(
+      tabsetPanel(
+        id = 'dataset',
+        tabPanel("wd", DT::dataTableOutput("mytable1"))
+      )
+    )
+  )
+)
+
+server <- function(input, output) {
+  # choose columns to display
+  output$mytable1 <- DT::renderDataTable({
+    DT::datatable(wd[, input$show_vars, drop = FALSE],
+                  options = list(lengthMenu = c(10, 20, 50),
+                                 pageLength = 10))
+  })
+}
+
+
+shinyApp(ui, 
+         server, 
+         options = list(height = 500))
+```
+
+
+## Dynamic plots
+
+
+```{r, echo = FALSE, eval=FALSE}
+
+uiPbf <- bootstrapPage(
+    # sidebarPanel(
+      selectInput("factName", 
+                  label = "Data Distribution By",
+            choices = c('Report generation process' = "process",
+                        'Stack name' = "stackName",
+                        'Day of the week' = "weekDay",
+                        'Hour of a day' = "hour"), 
+            selected = "process"),
+      
+      selectInput("pt",
+                  label = "Plot Type",
+                  choices =  c(Box = "geom_box",
+                               Density = "geom_violin"),
+                  selected = "geom_box"),
+      
+    # Only show this panel if the plot type is a density
+    conditionalPanel(
+      condition = "input.pt == 'geom_violin'",
+      selectInput("dataVis",
+                  label = "Show Jittered Data",
+                  choices =  c(Yes = "geom_jitter",
+                               No = "No"),
+                  selected = "No")),
+
+      plotOutput(outputId = "plot")
+
+)
+
+serverPbf <- function(input, output){
+  output$plot <- renderPlot({
+  factorPlot(groupVar = input$factName, 
+             plotType= input$pt,
+             showData = input$dataVis)})#, 
+  #width = 1200, height = 675)
+}
+shinyApp(uiPbf, serverPbf)
+
+ 
+```
+
+
+
+
+Blah blah
+
+
+
+
+blah blah
+
+
+
+blah blah
+
+
+
+```{r, echo = FALSE}
+uiPbfHP <- fluidPage(
+
+    fluidRow(
+    column(3,
+           # h4("Data exploring cotrols"),
+           selectInput("factName", 
+                  label = "Data Distribution By",
+            choices = c('Report generation process' = "process",
+                        'Stack name' = "stackName",
+                        'Day of the week' = "weekDay",
+                        'Hour of a day' = "hour"), 
+            selected = "process")
+    ),
+    column(4, offset = 1,
+           selectInput("pt",
+                  label = "Plot Type",
+                  choices =  c(Box = "geom_box",
+                               Density = "geom_violin"),
+                  selected = "geom_box")
+    ),
+    column(4,
+           conditionalPanel(
+      condition = "input.pt == 'geom_violin'",
+      selectInput("dataVis",
+                  label = "Show Jittered Data",
+                  choices =  c(Yes = "geom_jitter",
+                               No = "No"),
+                  selected = "No"))
+    )
+  ),
+  
+  hr(),
+  
+  plotOutput('plot')
+ 
+)
+
+serverPbfHP <- function(input, output){
+  output$plot <- renderPlot({
+  factorPlot(groupVar = input$factName, 
+             plotType= input$pt,
+             showData = input$dataVis)})#, 
+  #width = 1200, height = 675)
+}
+shinyApp(uiPbfHP, serverPbfHP)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r, echo=FALSE, message=FALSE}
+# factorCount(groupVar = quote(weekDay))
+# factorPlot(groupVar = quote(weekDay))
+```
+
+
+```{r, echo=FALSE, message=FALSE}
+# factorCount(groupVar = quote(stackName))
+# factorPlot(groupVar = quote(stackName))
+```
+
+```{r, echo=FALSE, message=FALSE}
+# factorCount(groupVar = quote(hour))
+# factorPlot(groupVar = quote(hour))
+```
+
+## Bivariate data summary
+
+
+```{r repCountBy2FactsFunc, echo=FALSE, message=FALSE}
+factorXCount <- function(data = wd, firstFact = quote(process), secondFact = quote(stackName)){
+  data %>%
+    mutate(repGenTime = as.numeric(repGenTime)) %>%
+    mutate(firstFact = factor(data %>% pull(as.character(firstFact)))) %>%
+     mutate(secondFact = factor(data %>% pull(as.character(secondFact)))) %>%
+    group_by(as.character(firstFact), as.character(secondFact)) %>%
+    summarize(reportCount = n(),
+              reporGenTimeMedian = median(repGenTime)) -> out2Fact
+  colnames(out2Fact)[1:2] <- c(as.character(firstFact), as.character(secondFact))
+  return(data.frame(out2Fact))
+}
+```
+
+```{r repCountPlotBy2FactsFunc, echo=FALSE, message=FALSE}
+factorXPlot <- function(data = wd, firstFact = quote(process), secondFact = quote(stackName)){
+  data %>%
+    mutate(repGenTime = as.numeric(repGenTime)) %>%
+    mutate(firstFact = factor(data %>% pull(as.character(firstFact)))) %>%
+     mutate(secondFact = factor(data %>% pull(as.character(secondFact)))) %>%
+  ggplot(aes(x = firstFact, y = repGenTime)) +
+    # geom_jitter(height = 0, width = 0.1, col =wes_palette("Royal1")[1]) +
+    # geom_violin(scale = "count",
+    #             trim = TRUE,
+    #             draw_quantiles = c(0.05, 0.25, 0.5, 0.75, 0.95),
+    #             alpha = 0.4,
+    #             col = wes_palette("Royal1")[2],
+    #             size = 0.5) +
+    geom_boxplot(alpha = 0.7,
+                 varwidth = TRUE,
+                 outlier.colour = wes_palette("Royal1")[2],
+                 outlier.shape = 1) +
+    theme_bw() +
+    scale_y_continuous(trans = "log10",
+                       breaks = scales::trans_breaks("log10",
+                                                     function(x) 10^x),
+                       labels = scales::trans_format("log10",
+                                                     scales::math_format(10^.x))) +
+    labs(title = "Report generation time") +
+    ylab("Time in mimutes") +
+    xlab(paste0(firstFact)) +
+    facet_wrap(~secondFact)
+}
+```
+
+```{r, echo=FALSE, message=FALSE}
+factorXCount(firstFact = quote(process), secondFact = quote(stackName))
+factorXPlot(firstFact = quote(process), secondFact = quote(stackName))
+```
+
+
+```{r, echo=FALSE, message=FALSE}
+factorXCount(firstFact = quote(process), secondFact = quote(weekDay))
+factorXPlot(firstFact = quote(process), secondFact = quote(weekDay))
+```
+```{r, echo=FALSE, message=FALSE}
+factorXCount(firstFact = quote(process), secondFact = quote(hour))
+factorXPlot(firstFact = quote(process), secondFact = quote(hour))
+```
+
+
+## Generation time for all reports by stack over time
+```{r}
+wd %>%
+  group_by(stackName, date) %>%
+  summarize(comTime = sum(repGenTime)) %>%
+  ungroup() %>%
+  ggplot(mapping = aes(x = date,
+                       y = as.numeric(comTime))) +
+  geom_line() +
+  facet_wrap(~stackName,
+             scales = "free_y")+
+  theme_bw() +
+  labs(title = "Report generation time") +
+  xlab("Date") +
+  ylab("Time in mimutes for all reports")
+```
+
+At its peak the stacks MDC04 and Toll can expose nearly 1000 minutes of DB query a day
+
+A spike at end the of the month (30 April) is visible for all stacks
+
+
+
+## Generation time for reports by stack
+
+```{r}
+# wd <- wd %>%
+#   group_by(process, stackName, repNames, date) %>%
+#   mutate(comTime = sum(repGenTime)) %>%
+#   ungroup()
+#
+# plotStackRepTime <- function(dat = wd, sNm = "Kestrel"){
+#   plotData <- dat %>%
+#     filter(stackName == sNm)
+#   gpgExTime <- ggplot(plotData,
+#                       mapping = aes(x = date,
+#                                     y = as.numeric(comTime),
+#                                     colour = factor(repNames))) +
+#     geom_line() +
+#     facet_wrap(~stackName) +
+#     scale_y_continuous(trans = "log10",
+#                        breaks = scales::trans_breaks("log10",
+#                                                      function(x) 10^x),
+#                        labels = scales::trans_format("log10",
+#                                                      scales::math_format(10^.x))) +
+#     theme_bw() +
+#     labs(title = "Report generation time") +
+#     xlab("Report") +
+#     ylab("Time in mimutes") +
+#     guides(color=guide_legend("Report name"))
+#
+#   return(gpgExTime)
+# }
+# plotStackRepTime(sNm = "Qube")
+# plotStackRepTime(sNm = "Kestrel")
+# Doesn't look very useful for bottleneck finding
+```
+
+
+
+## Fast, medium and slow report
+```{r}
+# Top x number of reports to achieve certain threshold
+
+topUsedReps <- function(x, topPct = 90){
+  x %>%
+    group_by(repNames) %>%
+    tally() %>%
+    arrange(desc(n)) %>%
+    mutate(cumulative = cumsum(n),
+           prop = (n/ sum(n))*100,
+           cumProp = cumsum(prop)) -> x2
+  retX <- x2[-which(x2$cumProp > topPct),]
+  if(last(retX$cumProp) != topPct*0.95){
+    cat("############################################", "\n")
+    cat("#### Are you happy with ", last(retX$cumProp), "% ? ####", "\n")
+    cat("############################################", "\n")}
+  return(retX)
+}
+# topUsedReps(wd, topPct = 90)
+
+
+#### Highlight top 99% reports in the hwc plot ####
+
+top90UsedReps <- topUsedReps(wd, topPct = 90) %>%
+  mutate(top90PctRep = "Yes") %>%
+  select(one_of(c("repNames", "top90PctRep")))
+
+wd %>%
+  left_join(., top90UsedReps) %>%
+  replace_na(list(top90PctRep = "No")) %>%
+  mutate(hour = hour(wd$taskStart)) -> fmsPlotTop90Dat
+
+fmsPlotTop90 <- function(data = fmsPlotTop90Dat, facetBy = quote(process)){
+  data %>%
+     mutate(facetBy = factor(data %>% pull(as.character(facetBy))))%>%
+    ggplot(aes(x = repNames, y = as.numeric(repGenTime))) +
+  geom_boxplot(aes(fill = top90PctRep)) +
+  scale_fill_brewer(palette = "Accent") +
+  scale_y_continuous(trans = "log10",
+                     breaks = scales::trans_breaks("log10",
+                                                   function(x) 10^x),
+                     labels = scales::trans_format("log10",
+                                                   scales::math_format(10^.x))) +
+  theme_bw() +
+  theme(#axis.text.x=element_text(size=10, hjust = 1, angle=90),
+        legend.position="bottom") +
+  labs(title = "Report generation time") +
+  xlab("Report type") +
+  ylab("Time in mimutes") +
+  coord_flip() +
+  geom_hline(yintercept=c(10^(-3), 10^(-2),
+                          10^(-1), 10^(0),
+                          10^(1), 10^(2)),
+             linetype="dashed",
+             color = "grey") +
+  guides(color=guide_legend("Top 90")) +
+  facet_grid(.~ facetBy)
+}
+```
+
+```{r}
+repByProcess <- fmsPlotTop90(facetBy = quote(process))
+repByProcess
+```
+
+
+
+
+
+```{r}
+repByStack <- fmsPlotTop90(facetBy = quote(stackName))
+repByStack
+```
+
+```{r}
+# repByHour <- fmsPlotTop90(facetBy = quote(hour))
+# repByHour
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
